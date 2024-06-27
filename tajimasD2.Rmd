@@ -1,0 +1,225 @@
+---
+title: "tajimaDandThetas"
+date: "2024-03-08"
+output: html_document
+---
+
+```{r setup, include=FALSE, echo = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+
+```
+
+## reading in the data and modifying (if needed)
+
+```{r data manipulation}
+df <- read.delim("a3.txt", header = T, sep = "\t")
+colnames(df) <- c("CHROM", "POS","REF", "ALT", "A3_1", "A3_10", "A3_2", "A3_3", "A3_4", "A3_5", "A3_6", "A3_7", "A3_8")
+m <- df[,5:ncol(df)]
+# assess the amount of missing data in the dataset. Remove rows with more than 50% missing data
+
+count_nas <- data.frame(apply(m, 1, function(x) sum(is.na(x))))# sum up all NA across the rows
+count_nas$filtered <- (count_nas/9) # divide by the number of samples
+colnames(count_nas) <- c("nas", "filtered")
+count_nas$filtered <- count_nas$filtered*100 # multiply by 100 to make for easy filtering
+tooMany <- which(count_nas$filtered >50)
+y <- df[-tooMany,] 
+
+pops <- "A3"
+
+output3 = data.frame(pop=character(),CHROM=character(),POS=numeric(),Window=numeric(),Thetapi=numeric(),Thetaw=numeric(),TajimasD=numeric(), stringsAsFactors = F)
+```
+
+## Tajima's D and thetas
+
+
+
+```{r TajimasD, echo = FALSE, warnings = FALSE}
+for(i in 1:length(pops)){
+  pop = pops[i]
+  ##NOTE, we need to iterate over all unique populations 
+  #remove individuals not matching names in pop !
+  df2 <- cbind(y[,1:2],y[,unlist(lapply(pop, function(x) grep(x,colnames(y))))])
+  
+  # This function calculates the length of sequence, L, given a population-contig pair
+  # set window size to 500bp after testing
+  # for testing: split genome into 2 bp windows, iterate over them
+  L = 500
+  windows = floor(nrow(df2)/L)
+  
+  #ensuring windows are non-overlapping, with bp = L
+  #reset segregating sites counter, S
+  #reset branches, a
+  totalL = 0
+  #Giant for-loop calculating S (segregating sites), a (watterson's correction factor), and pi (pairwise)
+  #iterate over windows of the genome
+  for(j in 1:windows){
+    S=0
+    pi=0
+    totalL = totalL + L
+    working = df2[(totalL-L+1):totalL,]
+    #To do: add another else to discard windows from multiple CHROM
+    # Calculate Watterson's theta
+    #can only do math if at least 1 individual is not NA
+    if(sum(!is.na(working[,3:ncol(working)]))<1 | length(unique(working$CHROM)) > 1){
+      output3[nrow(output3)+1,]=c(pop, NA, min(working$POS),j,NA,NA,NA,NA)
+      #S = NA
+      #a = NA
+      #L = NA
+      #pi = NA
+    }else{
+      #store branches for each SNP
+      a=numeric()
+      nbar = numeric()
+      
+      # Add number of sequences sampled from genotypes
+      for(k in 1:nrow(working)){
+        snp = working[k,]
+        #number of sequences from each diploid individual
+        n = sum(!is.na(snp[,3:ncol(snp)]))*2
+        nbar = append(nbar,n)
+        #make sure dataframe is not empty, just in case
+        if(!is.na(n)){
+          #save branch counters for each SNP in the sliding window
+          a = append(a,sum(1/1:(n-1)))
+          #unique must have the multiple column values copied into a vector
+          nucs = unlist(unique(c(snp[,3:ncol(snp)])))
+          #this new line ensures NA is missing from nucs
+          nucs = sort(nucs)
+          #multiple genotypes means a SNP, or all heterozygotes means a SNP
+          if(length(unique(nucs))>1){S=S+1} else if(length(unique(nucs)==1)){
+            if(unique(nucs)==1){S=S+1}}
+
+          #k = count of alleles of state '0' in the sample
+          #this equation ignored missing data in the sume
+          k =2*sum(snp[,3:ncol(snp)]==0, na.rm=T)+sum(snp[,3:ncol(snp)]==1,na.rm=T)
+          
+          #recall pairwise differences from a matrix of all comparisons
+          pi = pi + 2*k*(n-k)/(n*(n-1))
+        }}
+      
+      #length of sliding window, with missing sites assumed to be invariant
+      bp = max(working$POS)-min(working$POS)
+      
+      #calculate thetas
+      thetapi = pi/bp
+      #thetapi = pi/nrow(working)
+      thetaw = (S/mean(a,na.rm=T))/bp
+      #thetaw = (S/mean(a,na.rm=T))/nrow(working)
+      #Tajima's D calculated for each window (1989, genetics -> look at Hahn pg. 180)
+      #create a dataset where we know Tajima's D is zero
+      #these depend on average sample size in a window, nbar
+      n = mean(nbar,na.rm=T)
+      a1 = sum(1/1:(n-1))
+      a2 = sum(1/(1:(n-1))^2)
+      b1 = (n+1)/(3*(n-1))
+      b2 = 2*(n^2+n+3)/(9*n*(n-1))
+      #these depend on summaries of n
+      c1 = b1 - 1/a1
+      c2 = b2 - ((n+2)/(a1*n))+(a2/a1^2)
+      e1 = c1/a1
+      e2 = c2/(a1^2+a2)
+      
+      tajimasd = NA
+      if(S>0){tajimasd = (pi - S/mean(a,na.rm=T))/sqrt(e1*S + e2*S*(S-1))}
+      #write summaries to output
+      #for JB code, 2nd column name here to match my input file
+      #output[nrow(output)+1,]=c(pop, snp$X.CHROM, min(working$POS),j,thetapi,thetaw,tajimasd)
+      #for Shelby code, 2nd column name here matches her input file
+      output3[nrow(output3)+1,]=c(pop, snp$CHROM, min(working$POS),j,thetapi,thetaw,tajimasd)
+      }}}
+
+#convert to numeric; package dplyr from the Tidyverse
+A3 <- output3 %>% 
+  mutate_at(c(3:ncol(output3)), as.numeric)
+
+```
+
+```{r summary statistics}
+
+# m1 - 
+# m2 - 
+# m3 -  
+# a1 -
+# a2 - 
+# a3 -done
+
+save.csv(M3, "m3_tajimasD.csv")
+save.csv(M2, "m2_tajimasD.csv")
+save.csv(M1, "m1_tajimasD.csv")
+save.csv(A3, "a3_tajimasD.csv")
+save.csv(A2, "a2_tajimasD.csv")
+save.csv(A1, "a1_tajimasD.csv")
+
+
+# check to see if normally distributed; if so, proceed with t-tests. If not, wilcox test
+median(A1$TajimasD, na.rm = T)
+mean(A1$TajimasD, na.rm = T)
+
+median(A2$TajimasD, na.rm = T)
+mean(A2$TajimasD, na.rm = T)
+
+median(A3$TajimasD, na.rm = T)
+mean(A3$TajimasD, na.rm = T)
+
+median(M1$TajimasD, na.rm = T)
+mean(M1$TajimasD, na.rm = T)
+
+median(M2$TajimasD, na.rm = T)
+mean(M2$TajimasD, na.rm = T)
+
+median(M3$TajimasD, na.rm = T)
+mean(M3$TajimasD, na.rm = T)
+
+hist(M1$TajimasD)
+hist(M2$TajimasD)
+hist(M3$TajimasD)
+hist(A1$TajimasD)
+hist(A2$TajimasD)
+hist(A3$TajimasD)
+
+summary_tajimas <- data.frame("population" = c("M1", "M2", "M3", "A1", "A2", "A3"), "pi" = round(c(mean(M1$Thetapi, na.rm = T), mean(M2$Thetapi, na.rm = T), mean(M3$Thetapi, na.rm = T), mean(A1$Thetapi, na.rm = T), mean(A2$Thetapi, na.rm = T), mean(A3$Thetapi, na.rm = T)),5), "watterson" = round(c(mean(M1$Thetaw, na.rm = T), mean(M2$Thetaw, na.rm = T), mean(M3$Thetaw, na.rm = T), mean(A1$Thetaw, na.rm = T), mean(A2$Thetaw, na.rm = T), mean(A3$Thetaw, na.rm = T), 5)), "tajimaD" = round(c(mean(M1$TajimasD, na.rm = T), mean(M2$TajimasD, na.rm = T), mean(M3$TajimasD, na.rm = T), mean(A1$TajimasD, na.rm = T), mean(A2$TajimasD, na.rm = T), mean(A3$TajimasD, na.rm = T)), 5))
+
+sd_m1 <- sd(M1$TajimasD, na.rm = T)
+sd_m2 <- sd(M2$TajimasD, na.rm = T)
+sd_m3 <- sd(M3$TajimasD, na.rm = T)
+sd_a1 <- sd(A1$TajimasD, na.rm = T)
+sd_a2 <- sd(A2$TajimasD, na.rm = T)
+sd_a3 <- sd(A3$TajimasD, na.rm = T)
+
+
+library(kableExtra)
+
+summary_tajimas %>%
+  kbl(align = "c", booktabs = T) %>%
+  kable_styling("hover", full_width = F)
+
+# t-tests for normally distributed data (otherwise skip to line 210)
+
+b <- t.test(M3$TajimasD, mu = 0, conf.level = 0.95)
+e <- t.test(M1$TajimasD, mu = 0, conf.level = 0.95)
+g <- t.test(M2$TajimasD, mu = 0, conf.level = 0.95)
+p <- t.test(A1$TajimasD, mu = 0, conf.level = 0.95)
+f <- t.test(A2$TajimasD, mu = 0, conf.level = 0.95)
+m <- t.test(A3$TajimasD, mu = 0, conf.level = 0.95)
+
+t_table <- data.frame("t-statistic" = c(e$statistic, b$statistic, g$statistic, p$statistic, f$statistic,  m$statistic), "p-value" =  c(e$p.value, b$p.value, g$p.value, p$p.value, f$p.value,  m$p.value))
+
+rownames(t_table) <- c("M1", "M2", "M3", "A1", "A2", "A3") # the populations are in a different order than what they were above because I'm a fool
+
+t_table %>%
+  kbl() %>% 
+  kable_styling("striped",full_width = F, position = "center")
+
+
+#not normally distributed? Wilcoxon/Mann-Whitney test
+w_b <- wilcox.test(M3$TajimasD, mu = 0)
+w_e <- wilcox.test(M1$TajimasD, mu = 0)
+w_g <- wilcox.test(M2$TajimasD, mu = 0)
+w_p <- wilcox.test(A1$TajimasD, mu = 0)
+w_f <- wilcox.test(A2$TajimasD, mu = 0)
+w_m <- wilcox.test(A3$TajimasD, mu = 0)
+
+w_table <- data.frame("p-value" =  c(w_e$p.value, w_b$p.value, w_g$p.value, w_p$p.value, w_f$p.value,  w_m$p.value))
+```
+
